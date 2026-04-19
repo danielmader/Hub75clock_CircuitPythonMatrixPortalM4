@@ -1,4 +1,6 @@
-# MatrixClock_CircuitPythonMatrixPortalM4
+# Hub75clock_CircuitPythonMatrixPortalM4
+
+https://github.com/danielmader/Hub75clock_CircuitPythonMatrixPortalM4
 
 A simple clock for a 64x32 HUB75 LED matrix display powered by Adafruit's MatrixPortal M4 with NTP sync and a Sensirion SHT40 ambient sensor. 
 
