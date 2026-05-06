@@ -1,0 +1,35 @@
+{
+    // venvCP (Python 3.11) with circuitpython-stubs, flake8 and all adafruit libs
+    "python.defaultInterpreterPath": "/home/mada/Making/Hub75clock_CircuitPythonMatrixPortalM4/venvCP/bin/python3",
+
+    // basic is enough; strict creates too many false positives for hardware APIs
+    "python.analysis.typeCheckingMode": "basic",
+
+    // circuitpython-stubs and adafruit-circuitpython-* are installed here
+    "python.analysis.extraPaths": [
+        "/home/mada/Making/Hub75clock_CircuitPythonMatrixPortalM4/venvCP/lib/python3.11/site-packages"
+    ],
+
+    // Flake8 linter – uses the project tox.ini config
+    "python.linting.flake8Enabled": true,
+    "python.linting.flake8Path": "/home/mada/Making/Hub75clock_CircuitPythonMatrixPortalM4/venvCP/bin/flake8",
+    "python.linting.enabled": true,
+
+    // Source files live in src/
+    "python.analysis.include": [
+        "src"
+    ],
+
+    // Exclude the venv from analysis (large, not our code)
+    "python.analysis.exclude": [
+        "venvCP/**"
+    ],
+
+    // Suppress false positives from CircuitPython stubs (board pins, Label.color type issues, etc.)
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportGeneralTypeIssues": "none",
+        "reportOptionalMemberAccess": "none",
+        "reportOptionalSubscript": "none",
+        "reportMissingImports": "none"
+    }
+}

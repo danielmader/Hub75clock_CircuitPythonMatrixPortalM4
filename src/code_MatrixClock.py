@@ -5,7 +5,7 @@ MatrixClock - a HUB75 LED matrix clock driven by Adafruit's MaxtrixPortal M4.
 * Temperature/humidity ambient sensor (Sensirion SHT40).
 
 @author: mada
-@version: 2025-08-10
+@version: 2026-05-06
 """
 
 # import sys
@@ -129,7 +129,7 @@ print("## Current RTC time:", rtc.datetime)
 
 
 ##------------------------------------------------------------------------------
-def sync_time_via_ntp():
+async def sync_time_via_ntp():
     """Synchronize RTC and ts_clocktick with NTP."""
     global ts_clocktick
     global ts_lastntpsync
@@ -137,9 +137,10 @@ def sync_time_via_ntp():
 
     print("\n>> Syncing time via NTP...")
     try:
-        ## The line below may raise an OSError if SPI times out or if Wi-Fi is locked up
-        rtc.datetime = ntp.datetime
-        ts_clocktick = time.mktime(ntp.datetime)
+        ## Cache ntp.datetime once to avoid two blocking network calls
+        ntp_now = ntp.datetime
+        rtc.datetime = ntp_now
+        ts_clocktick = time.mktime(ntp_now)
         ts_lastntpsync = time.monotonic()
         print("<< Time synchronized successfully.")
         consecutive_failures = 0  # reset on success
@@ -152,22 +153,23 @@ def sync_time_via_ntp():
             print("!! Too many consecutive failures, resetting the ESP module...")
             esp.reset()                # Hard-reset the ESP32
             ## After a reset, the ESP32 is in an initial state, so we need to re-init Wi-Fi
-            reconnect_wifi()
+            await reconnect_wifi()
             consecutive_failures = 0
         else:
-            ## Optional: wait a bit before trying again
-            time.sleep(10)
+            ## Yield control to other tasks while waiting before the next retry
+            await asyncio.sleep(10)
 
 
 ##------------------------------------------------------------------------------
-def reconnect_wifi():
+async def reconnect_wifi():
     """Reconnect to Wi-Fi after an esp.reset()."""
     while not esp.is_connected:
         try:
             esp.connect_AP(CIRCUITPY_WIFI_SSID, CIRCUITPY_WIFI_PASSWORD)
         except OSError as e:
             print("!! Could not reconnect to Wi-Fi, retrying:", e)
-            time.sleep(5)
+            ## Yield control to the event loop instead of blocking
+            await asyncio.sleep(5)
     print("!! Reconnected to Wi-Fi after ESP reset.")
 
 
@@ -351,28 +353,20 @@ def update_display(*, hours=None, minutes=None, show_colon=False):
     now_time = time.time()
     now_tick = ts_clocktick
     now_rtc = rtc.datetime
-    ## Protect the direct ntp.datetime call
-    try:
-        now_ntp = ntp.datetime
-    except OSError as e:
-        print("!! OSError while fetching ntp.datetime:", e)
-        now_ntp = now_rtc
     # print(f"## Monotonic: {now_monotonic}")
     # print(f"## Time:      {now_time}")
     # print(f"## Tick:      {now_tick}")
     # print(f"## UTC @ Time: {time.localtime(now_time)}")
     # print(f"## UTC @ Tick: {time.localtime(now_tick)}")
     # print(f"## UTC @ RTC:  {now_rtc}")
-    # print(f"## UTC @ NTP:  {now_ntp}")
     print()
     print(f"## CET @ Time: {datetime_util.localtime_toString(time.localtime(now_time))}")
     print(f"## CET @ Tick: {datetime_util.localtime_toString(time.localtime(now_tick))}")
     print(f"## CET @ RTC:  {datetime_util.localtime_toString(now_rtc)}")
-    print(f"## CET @ NTP:  {datetime_util.localtime_toString(now_ntp)}")
 
-    #now = datetime_util.cettime(time.time())  # CET/CEST
+    ## Use the RTC (already NTP-synced) for display – avoids blocking network calls
     offset = datetime_util.daylightSavingOffset(now_time)  # TZ offset in seconds (CET/CEST)
-    now = time.localtime(time.mktime(now_ntp) + offset)  # CET/CEST
+    now = time.localtime(time.mktime(now_rtc) + offset)  # CET/CEST
 
     if hours is None:
         hours = now[3]
@@ -439,15 +433,12 @@ async def _clocktick(lock):
 
 
 ##------------------------------------------------------------------------------
-def clocktick():
+async def clocktick():
     """Check if NTP sync is due and update the clock display."""
-    global ts_lastntpsync
-    global ts_clocktick
-
     ## Check if NTP is due
     if ts_lastntpsync is None or time.monotonic() > ts_lastntpsync + NTP_INTERVAL:
         update_display(show_colon=True)  # make sure a colon is displayed while updating
-        sync_time_via_ntp()
+        await sync_time_via_ntp()
     ## Update the time display
     update_display()
 
@@ -474,7 +465,7 @@ async def main():
     # asyncio.create_task(_sync_time_NTP(lock, ntp))
 
     while True:
-        clocktick()
+        await clocktick()
         await asyncio.sleep(1)
 
 
