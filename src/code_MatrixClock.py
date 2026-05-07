@@ -12,6 +12,7 @@ MatrixClock - a HUB75 LED matrix clock driven by Adafruit's MaxtrixPortal M4.
 import os
 import time
 import asyncio
+import microcontroller
 
 ## Network ---------------------------------------------------------------------
 import board
@@ -63,6 +64,15 @@ else:
 MAX_CONSECUTIVE_FAILURES = 3
 consecutive_failures = 0
 
+WIFI_CONNECT_TIMEOUT = 20
+WIFI_RETRY_DELAY = 2
+I2C_LOCK_TIMEOUT = 1.0
+I2C_LOCK_RETRY_DELAY = 0.01
+SENSOR_READ_INTERVAL = 10
+
+last_sensor_read_monotonic = 0.0
+last_sensor_reading = (None, None)
+
 ##******************************************************************************
 ##******************************************************************************
 
@@ -107,11 +117,17 @@ print("## IP addr:", esp.pretty_ip(esp.ip_address))
 
 print(">> Connecting...")
 while not esp.is_connected:
-    try:
-        esp.connect_AP(CIRCUITPY_WIFI_SSID, CIRCUITPY_WIFI_PASSWORD)
-    except OSError as e:
-        print("!! Could not connect, retrying: ", e)
-        continue
+    connect_started = time.monotonic()
+    while (not esp.is_connected) and (time.monotonic() - connect_started < WIFI_CONNECT_TIMEOUT):
+        try:
+            esp.connect_AP(CIRCUITPY_WIFI_SSID, CIRCUITPY_WIFI_PASSWORD)
+        except OSError as e:
+            print("!! Could not connect, retrying:", e)
+            time.sleep(WIFI_RETRY_DELAY)
+    if not esp.is_connected:
+        print("!! Wi-Fi connect timeout, resetting ESP and retrying...")
+        esp.reset()
+        time.sleep(1)
 print("## Connected to", esp.ap_info.ssid, "\tRSSI:", esp.ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
 
 
@@ -137,6 +153,11 @@ async def sync_time_via_ntp():
 
     print("\n>> Syncing time via NTP...")
     try:
+        if not esp.is_connected:
+            print("!! Wi-Fi disconnected before NTP sync, reconnecting...")
+            if not await reconnect_wifi():
+                raise OSError("Wi-Fi reconnect timeout before NTP sync")
+
         ## Cache ntp.datetime once to avoid two blocking network calls
         ntp_now = ntp.datetime
         rtc.datetime = ntp_now
@@ -153,24 +174,30 @@ async def sync_time_via_ntp():
             print("!! Too many consecutive failures, resetting the ESP module...")
             esp.reset()                # Hard-reset the ESP32
             ## After a reset, the ESP32 is in an initial state, so we need to re-init Wi-Fi
-            await reconnect_wifi()
+            if not await reconnect_wifi(max_wait_s=30):
+                print("!! ESP reconnect failed repeatedly; performing board reset.")
+                microcontroller.reset()
             consecutive_failures = 0
-        else:
-            ## Yield control to other tasks while waiting before the next retry
-            await asyncio.sleep(10)
 
 
 ##------------------------------------------------------------------------------
-async def reconnect_wifi():
+async def reconnect_wifi(max_wait_s=20):
     """Reconnect to Wi-Fi after an esp.reset()."""
-    while not esp.is_connected:
+    deadline = time.monotonic() + max_wait_s
+    while (not esp.is_connected) and (time.monotonic() < deadline):
         try:
             esp.connect_AP(CIRCUITPY_WIFI_SSID, CIRCUITPY_WIFI_PASSWORD)
         except OSError as e:
             print("!! Could not reconnect to Wi-Fi, retrying:", e)
             ## Yield control to the event loop instead of blocking
-            await asyncio.sleep(5)
-    print("!! Reconnected to Wi-Fi after ESP reset.")
+        await asyncio.sleep(WIFI_RETRY_DELAY)
+
+    if esp.is_connected:
+        print("!! Reconnected to Wi-Fi after ESP reset.")
+        return True
+
+    print("!! Reconnect timeout.")
+    return False
 
 
 ##==============================================================================
@@ -247,14 +274,25 @@ print(  "*********************************************")
 i2c_bus = board.I2C()  # uses board.SCL and board.SDA
 # i2c_bus = board.STEMMA_I2C()  # For using the built-in STEMMA QT connector on a microcontroller
 
-while not i2c_bus.try_lock():
-    pass
-try:
-    i2c_devices = i2c_bus.scan()
-    print("\n## I2C device addresses found:")
-    print(">", [(device_address, hex(device_address)) for device_address in i2c_devices])
-finally:
-    i2c_bus.unlock()
+def lock_i2c_with_timeout(timeout_s=I2C_LOCK_TIMEOUT):
+    """Try to acquire I2C lock and return True on success, False on timeout."""
+    started = time.monotonic()
+    while not i2c_bus.try_lock():
+        if time.monotonic() - started >= timeout_s:
+            return False
+        time.sleep(I2C_LOCK_RETRY_DELAY)
+    return True
+
+
+if lock_i2c_with_timeout():
+    try:
+        i2c_devices = i2c_bus.scan()
+        print("\n## I2C device addresses found:")
+        print(">", [(device_address, hex(device_address)) for device_address in i2c_devices])
+    finally:
+        i2c_bus.unlock()
+else:
+    print("!! I2C lock timeout during startup scan; continuing without scan.")
 
 sht40_sensor = 0x44  # i2c_devices[1]
 
@@ -283,8 +321,10 @@ def read_sensor():
     * rh_pRH : float
     """
     mode = sht40_modes[1]  # NOHEAT_HIGHPRECISION
-    while not i2c_bus.try_lock():
-        pass
+
+    if not lock_i2c_with_timeout():
+        raise RuntimeError("I2C lock timeout while reading SHT40")
+
     try:
         # print ("\n## Reading sensor data...")
         i2c_bus.writeto(sht40_sensor, bytearray([mode[1]]))
@@ -310,9 +350,14 @@ def read_sensor():
 
 
 print("\n## Reading sensor data...")
-t_degC, rh_pRH = read_sensor()
-print('> temperature:', t_degC)
-print('> humidity:', rh_pRH)
+try:
+    t_degC, rh_pRH = read_sensor()
+    last_sensor_reading = (t_degC, rh_pRH)
+    last_sensor_read_monotonic = time.monotonic()
+    print('> temperature:', t_degC)
+    print('> humidity:', rh_pRH)
+except Exception as e:
+    print("!! Initial sensor read failed:", e)
 
 
 ##==============================================================================
@@ -349,8 +394,12 @@ group.append(sensor_label)
 ##------------------------------------------------------------------------------
 def update_display(*, hours=None, minutes=None, show_colon=False):
     """Update the clock display with the current time and sensor readings."""
+    global last_sensor_read_monotonic
+    global last_sensor_reading
+
     # now_monotonic = time.monotonic()
     now_time = time.time()
+    now_monotonic = time.monotonic()
     now_tick = ts_clocktick
     now_rtc = rtc.datetime
     # print(f"## Monotonic: {now_monotonic}")
@@ -409,26 +458,34 @@ def update_display(*, hours=None, minutes=None, show_colon=False):
         print("## clock_label x: {} y: {}".format(clock_label.x, clock_label.y))
 
     ## Format the sensor string ------------------------------------------------
-    if seconds % 2 == 0:
-        t_degC, rh_pRH = read_sensor()
+    if now_monotonic - last_sensor_read_monotonic >= SENSOR_READ_INTERVAL:
+        try:
+            last_sensor_reading = read_sensor()
+            last_sensor_read_monotonic = now_monotonic
+        except Exception as e:
+            print("!! Sensor read failed:", e)
+
+    t_degC, rh_pRH = last_sensor_reading
+    if t_degC is None or rh_pRH is None:
+        sensor_str = "--.-°  --.-%"
+    else:
         sensor_str = "{:.1f}°  {:.1f}%".format(t_degC, rh_pRH)
-        sensor_label.text = sensor_str
-        bbx, bby, bbwidth, bbh = sensor_label.bounding_box
-        sensor_label.x = round(display.width / 2 - bbwidth / 2)  # centered
-        sensor_label.y = 26
-        if DEBUG:
-            print("## sensor_label bounding box: {},{},{},{}".format(bbx, bby, bbwidth, bbh))
-            print("## sensor_label x: {} y: {}".format(sensor_label.x, sensor_label.y))
+
+    sensor_label.text = sensor_str
+    bbx, bby, bbwidth, bbh = sensor_label.bounding_box
+    sensor_label.x = round(display.width / 2 - bbwidth / 2)  # centered
+    sensor_label.y = 26
+    if DEBUG:
+        print("## sensor_label bounding box: {},{},{},{}".format(bbx, bby, bbwidth, bbh))
+        print("## sensor_label x: {} y: {}".format(sensor_label.x, sensor_label.y))
 
 
 ##------------------------------------------------------------------------------
-async def _clocktick(lock):
+async def _clocktick():
     """Scheduler to add one second to the counter."""
     global ts_clocktick
     while True:
-        # await lock.acquire()
         ts_clocktick += 1
-        # lock.release()
         await asyncio.sleep(1)
 
 
@@ -456,16 +513,16 @@ update_display(show_colon=True)  # display whatever time is on the board
 
 ## 2) Run clock in a routine
 async def main():
-    ## Create the lock instance
-    lock = asyncio.Lock()
-
     ## Init co-routines (cooperative tasks) for basic clock function
-    asyncio.create_task(_clocktick(lock))
+    asyncio.create_task(_clocktick())
     # asyncio.create_task(_update_clock(lock))
     # asyncio.create_task(_sync_time_NTP(lock, ntp))
 
     while True:
-        await clocktick()
+        try:
+            await clocktick()
+        except Exception as e:
+            print("!! Unhandled error in main loop:", e)
         await asyncio.sleep(1)
 
 
