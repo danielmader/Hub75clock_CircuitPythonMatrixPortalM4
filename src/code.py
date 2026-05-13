@@ -50,6 +50,8 @@ BLINK = True
 ## NTP sync interval
 NTP_INTERVAL = 3600 * 12  # 3600s * 12 = 60min * 12 = 12h
 NTP_INTERVAL = 3600  # 3600s = 60min = 1h
+## NTP retry interval after failure
+NTP_RETRY_INTERVAL = 300  # 5 minutes
 ## Last NTP sync
 ts_lastntpsync = None
 ## Clock counter
@@ -167,7 +169,8 @@ async def sync_time_via_ntp():
     except OSError as e:
         consecutive_failures += 1
         print(f"!! OSError while syncing time: {e} (fail #{consecutive_failures})")
-
+        ## Schedule next retry after NTP_RETRY_INTERVAL, not on every tick
+        ts_lastntpsync = time.monotonic() - NTP_INTERVAL + NTP_RETRY_INTERVAL
         ## If we’ve failed too many times in a row, reset the ESP
         if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
             print("!! Too many consecutive failures, resetting the ESP module...")
