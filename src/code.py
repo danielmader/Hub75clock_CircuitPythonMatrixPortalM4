@@ -45,24 +45,20 @@ import datetime_util
 ## DEBUG mode
 DEBUG = False
 # DEBUG = True
+
 ## Blinking colon
 BLINK = True
 ## NTP sync interval
-NTP_INTERVAL = 3600 * 12  # 3600s * 12 = 60min * 12 = 12h
 NTP_INTERVAL = 3600  # 3600s = 60min = 1h
+NTP_INTERVAL = 3600 * 6  # 3600s * 6 = 60min * 6 = 6h
 ## NTP retry interval after failure
 NTP_RETRY_INTERVAL = 300  # 5 minutes
 ## Last NTP sync
 ts_lastntpsync = None
-## Clock counter
-if DEBUG:
-    ## Start at 05:59:00 UTC = 06:59:00 CET ...
-    ts_clocktick = 60 * 60 * 5 + 59 * 60
-else:
-    ## Start at 00:00:00 UTC
-    ts_clocktick = time.time()
+## Clock counter starts at 00:00:00 UTC
+ts_clocktick = time.time()
 
-MAX_CONSECUTIVE_FAILURES = 3
+MAX_CONSECUTIVE_FAILURES = 12
 consecutive_failures = 0
 
 WIFI_CONNECT_TIMEOUT = 20
@@ -107,7 +103,7 @@ spi = busio.SPI(board.SCK, board.MOSI, board.MISO)
 esp = adafruit_esp32spi.ESP_SPIcontrol(spi, esp32_cs, esp32_busy, esp32_reset)
 
 if esp.status == adafruit_esp32spi.WL_IDLE_STATUS:
-    print("## ESP32 found and in idle mode")
+    print("\n## ESP32 found and in idle mode")
 print("## Firmware vers.", esp.firmware_version)
 print("## MAC addr:", ":".join("%02X" % byte for byte in esp.MAC_address))
 print("## IP addr:", esp.pretty_ip(esp.ip_address))
@@ -395,11 +391,12 @@ group.append(sensor_label)
 
 
 ##------------------------------------------------------------------------------
-def update_display(*, hours=None, minutes=None, show_colon=False):
+def update_display(*, now: time.struct_time | tuple | None=None):
     """Update the clock display with the current time and sensor readings."""
     global last_sensor_read_monotonic
     global last_sensor_reading
 
+    ## Compare the different time sources for debugging purposes (and fun)
     # now_monotonic = time.monotonic()
     now_time = time.time()
     now_monotonic = time.monotonic()
@@ -416,21 +413,20 @@ def update_display(*, hours=None, minutes=None, show_colon=False):
     print(f"## CET @ Tick: {datetime_util.localtime_toString(time.localtime(now_tick))}")
     print(f"## CET @ RTC:  {datetime_util.localtime_toString(now_rtc)}")
 
-    ## Use the RTC (already NTP-synced) for display – avoids blocking network calls
-    offset = datetime_util.daylightSavingOffset(now_time)  # TZ offset in seconds (CET/CEST)
-    now = time.localtime(time.mktime(now_rtc) + offset)  # CET/CEST
-
-    if hours is None:
-        hours = now[3]
-    if minutes is None:
-        minutes = now[4]
+    if now is None:
+        ## Use the RTC (already NTP-synced) for display – avoids blocking network calls
+        offset = datetime_util.daylightSavingOffset(now_time)  # TZ offset in seconds (CET/CEST)
+        now = time.localtime(time.mktime(now_rtc) + offset)  # CET/CEST
+    hours = now[3]
+    minutes = now[4]
     seconds = now[5]
-    if now[6] in [5, 6]:  # Saturday or Sunday
-        wakeup = 8
+    weekday = now[6]
+    if weekday in [5, 6]:  # Saturday or Sunday
+        wakeup_hour = 8
     else:
-        wakeup = 7
+        wakeup_hour = 7
 
-    if hours >= 20 or hours < wakeup:
+    if int(hours) >= 20 or int(hours) < wakeup_hour:
         ## Evening hours to morning
         clock_label.font = font_clock_night
         clock_label.color = color[1]
@@ -444,7 +440,7 @@ def update_display(*, hours=None, minutes=None, show_colon=False):
         sensor_label.color = color[3]
 
     if BLINK:
-        colon = ":" if show_colon or seconds % 2 else " "
+        colon = ":" if seconds % 2 else " "
     else:
         colon = ":"
 
@@ -485,28 +481,35 @@ def update_display(*, hours=None, minutes=None, show_colon=False):
 
 ##------------------------------------------------------------------------------
 async def _clocktick():
-    """Scheduler to add one second to the counter."""
+    """
+    Scheduler to add one second to the counter.
+    NOTE: This is only to compare the accuracy of the RTC and the NTP-synced ts_clocktick, not to drive the display update.
+    """
     global ts_clocktick
     while True:
         ts_clocktick += 1
-        await asyncio.sleep(1)
+        # await asyncio.sleep(1)
+        ## Drift compensation:
+        ## Compute how many milliseconds are left until the next full second.
+        ## This prevents the display from slowly "drifting".
+        now_mono = time.monotonic()
+        ms_in_second = (now_mono % 1) * 1000  # Extract millisecond fraction
+        ms_to_next_second = 1000 - ms_in_second
+        await asyncio.sleep(ms_to_next_second / 1000)
 
 
 ##------------------------------------------------------------------------------
 async def clocktick():
     """Check if NTP sync is due and update the clock display."""
-    ## Check if NTP is due
-    if ts_lastntpsync is None or time.monotonic() > ts_lastntpsync + NTP_INTERVAL:
-        update_display(show_colon=True)  # make sure a colon is displayed while updating
+    if not DEBUG and (ts_lastntpsync is None or time.monotonic() > ts_lastntpsync + NTP_INTERVAL):
         await sync_time_via_ntp()
-    ## Update the time display
     update_display()
 
 
 ##******************************************************************************
 ##******************************************************************************
 
-update_display(show_colon=True)  # display whatever time is on the board
+update_display()  # display whatever time is on the board
 
 ## 1) Run clock in a loop
 # while True:
@@ -526,7 +529,14 @@ async def main():
             await clocktick()
         except Exception as e:
             print("!! Unhandled error in main loop:", e)
-        await asyncio.sleep(1)
+        # await asyncio.sleep(1)
+        ## Drift compensation:
+        ## Compute how many milliseconds are left until the next full second.
+        ## This prevents the display from slowly "drifting".
+        now_mono = time.monotonic()
+        ms_in_second = (now_mono % 1) * 1000  # Extract millisecond fraction
+        ms_to_next_second = 1000 - ms_in_second
+        await asyncio.sleep(ms_to_next_second / 1000)
 
 
 # try:
