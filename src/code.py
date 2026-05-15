@@ -293,9 +293,8 @@ if lock_i2c_with_timeout():
 else:
     print("!! I2C lock timeout during startup scan; continuing without scan.")
 
-sht40_sensor = 0x44  # i2c_devices[1]
-
-sht40_modes = (
+SHT40_SENSOR = 0x44  # i2c_devices[1]
+SHT40_MODES = (
     ("SERIAL_NUMBER", 0x89, "Serial number", 0.01),
     ("NOHEAT_HIGHPRECISION", 0xFD, "No heater, high precision", 0.01),
     ("NOHEAT_MEDPRECISION", 0xF6, "No heater, med precision", 0.005),
@@ -319,17 +318,17 @@ def read_sensor():
     * t_degC : float
     * rh_pRH : float
     """
-    mode = sht40_modes[1]  # NOHEAT_HIGHPRECISION
+    mode = SHT40_MODES[1]  # NOHEAT_HIGHPRECISION
 
     if not lock_i2c_with_timeout():
         raise RuntimeError("I2C lock timeout while reading SHT40")
 
     try:
         # print ("\n## Reading sensor data...")
-        i2c_bus.writeto(sht40_sensor, bytearray([mode[1]]))
+        i2c_bus.writeto(SHT40_SENSOR, bytearray([mode[1]]))
         time.sleep(mode[-1])
         rx_bytes = bytearray(6)
-        i2c_bus.readfrom_into(sht40_sensor, rx_bytes)
+        i2c_bus.readfrom_into(SHT40_SENSOR, rx_bytes)
         # print('>', rx_bytes, len(rx_bytes))
         t_ticks = rx_bytes[0] * 256 + rx_bytes[1]
         rh_ticks = rx_bytes[3] * 256 + rx_bytes[4]
@@ -400,17 +399,13 @@ def update_display(*, now: time.struct_time | tuple | None=None):
     # now_monotonic = time.monotonic()
     now_time = time.time()
     now_monotonic = time.monotonic()
-    now_tick = ts_clocktick
     now_rtc = rtc.datetime
     # print(f"## Monotonic: {now_monotonic}")
     # print(f"## Time:      {now_time}")
-    # print(f"## Tick:      {now_tick}")
     # print(f"## UTC @ Time: {time.localtime(now_time)}")
-    # print(f"## UTC @ Tick: {time.localtime(now_tick)}")
     # print(f"## UTC @ RTC:  {now_rtc}")
     print()
     print(f"## CET @ Time: {datetime_util.localtime_toString(time.localtime(now_time))}")
-    print(f"## CET @ Tick: {datetime_util.localtime_toString(time.localtime(now_tick))}")
     print(f"## CET @ RTC:  {datetime_util.localtime_toString(now_rtc)}")
 
     if now is None:
@@ -480,25 +475,6 @@ def update_display(*, now: time.struct_time | tuple | None=None):
 
 
 ##------------------------------------------------------------------------------
-async def _clocktick():
-    """
-    Scheduler to add one second to the counter.
-    NOTE: This is only to compare the accuracy of the RTC and the NTP-synced ts_clocktick, not to drive the display update.
-    """
-    global ts_clocktick
-    while True:
-        ts_clocktick += 1
-        # await asyncio.sleep(1)
-        ## Drift compensation:
-        ## Compute how many milliseconds are left until the next full second.
-        ## This prevents the display from slowly "drifting".
-        now_mono = time.monotonic()
-        ms_in_second = (now_mono % 1) * 1000  # Extract millisecond fraction
-        ms_to_next_second = 1000 - ms_in_second
-        await asyncio.sleep(ms_to_next_second / 1000)
-
-
-##------------------------------------------------------------------------------
 async def clocktick():
     """Check if NTP sync is due and update the clock display."""
     if not DEBUG and (ts_lastntpsync is None or time.monotonic() > ts_lastntpsync + NTP_INTERVAL):
@@ -509,18 +485,14 @@ async def clocktick():
 ##******************************************************************************
 ##******************************************************************************
 
-update_display()  # display whatever time is on the board
-
-## 1) Run clock in a loop
-# while True:
-#     clocktick()
-#     time.sleep(1)
-
-
-## 2) Run clock in a routine
+##==============================================================================
 async def main():
+    """Clock main routine."""
+    ## Display whatever time is on the board
+    update_display()
+
     ## Init co-routines (cooperative tasks) for basic clock function
-    asyncio.create_task(_clocktick())
+    # asyncio.create_task(_clocktick())
     # asyncio.create_task(_update_clock(lock))
     # asyncio.create_task(_sync_time_NTP(lock, ntp))
 
@@ -529,14 +501,15 @@ async def main():
             await clocktick()
         except Exception as e:
             print("!! Unhandled error in main loop:", e)
-        # await asyncio.sleep(1)
         ## Drift compensation:
         ## Compute how many milliseconds are left until the next full second.
         ## This prevents the display from slowly "drifting".
-        now_mono = time.monotonic()
-        ms_in_second = (now_mono % 1) * 1000  # Extract millisecond fraction
-        ms_to_next_second = 1000 - ms_in_second
-        await asyncio.sleep(ms_to_next_second / 1000)
+        # now_mono = time.monotonic()
+        # ms_in_second = (now_mono % 1) * 1000  # Extract millisecond fraction
+        # ms_to_next_second = 1000 - ms_in_second
+        # await asyncio.sleep(ms_to_next_second / 1000)
+        ## Simple fixed delay (no drift compensation)
+        await asyncio.sleep(1)
 
 
 # try:
