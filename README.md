@@ -2,9 +2,17 @@
 
 https://github.com/danielmader/Hub75clock_CircuitPythonMatrixPortalM4
 
-A simple clock for a 64x32 HUB75 LED matrix display powered by Adafruit's MatrixPortal M4 with NTP sync and a Sensirion SHT40 ambient sensor. 
+A simple clock for a 64x32 HUB75 LED matrix display powered by Adafruit's MatrixPortal M4 with NTP sync and a Sensirion SHT40 ambient sensor.
 
-This repo is a consolidated example.
+Upper left and right corners show a status indicator.
+
+Left:
+  * no indicator: OK (i.e. last sync within due interval)
+  * blinking: never synced with NTP OR currently syncing
+  * permanent amber: NTP is overdue
+
+Right:
+  * no network connection
 
 # Hardware
 
