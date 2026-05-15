@@ -11,7 +11,6 @@ MatrixClock - a HUB75 LED matrix clock driven by Adafruit's MaxtrixPortal M4.
 import os
 import time
 import asyncio
-import microcontroller
 
 ## Network ---------------------------------------------------------------------
 import board
@@ -63,12 +62,23 @@ consecutive_failures = 0
 
 WIFI_CONNECT_TIMEOUT = 20
 WIFI_RETRY_DELAY = 2
+WIFI_OFFLINE_RETRY_INTERVAL = 15
+WIFI_ATTEMPT_TIMEOUT = 3
 I2C_LOCK_TIMEOUT = 1.0
 I2C_LOCK_RETRY_DELAY = 0.01
 SENSOR_READ_INTERVAL = 10
+STATUS_MARKER_SIZE = 2
 
 last_sensor_read_monotonic = 0.0
 last_sensor_reading = (None, None)
+
+next_wifi_attempt_monotonic = 0.0
+next_ntp_attempt_monotonic = 0.0
+ntp_sync_in_progress = False
+
+pool = None
+ntp = None
+rtc = RTC()
 
 ##******************************************************************************
 ##******************************************************************************
@@ -112,20 +122,7 @@ print("## IP addr:", esp.pretty_ip(esp.ip_address))
 # for ap in esp.scan_networks():
 #     print("\t%-23s RSSI: %d" % (ap.ssid, ap.rssi))
 
-print(">> Connecting...")
-while not esp.is_connected:
-    connect_started = time.monotonic()
-    while (not esp.is_connected) and (time.monotonic() - connect_started < WIFI_CONNECT_TIMEOUT):
-        try:
-            esp.connect_AP(CIRCUITPY_WIFI_SSID, CIRCUITPY_WIFI_PASSWORD)
-        except OSError as e:
-            print("!! Could not connect, retrying:", e)
-            time.sleep(WIFI_RETRY_DELAY)
-    if not esp.is_connected:
-        print("!! Wi-Fi connect timeout, resetting ESP and retrying...")
-        esp.reset()
-        time.sleep(1)
-print("## Connected to", esp.ap_info.ssid, "\tRSSI:", esp.ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
+print(">> Startup continues in offline-first mode; Wi-Fi connect runs in background.")
 
 
 ##==============================================================================
@@ -133,12 +130,30 @@ print("\n*******************")
 print(  "**** NTP & RTC ****")
 print(  "*******************")
 
-pool = adafruit_connection_manager.get_radio_socketpool(esp)
-ntp = NTP(pool, tz_offset=0, cache_seconds=NTP_INTERVAL, server="pool.ntp.org")
-print("## Current NTP time:", ntp.datetime)
-rtc = RTC()
-rtc.datetime = ntp.datetime
 print("## Current RTC time:", rtc.datetime)
+
+
+##------------------------------------------------------------------------------
+def init_ntp_client():
+    """Initialize socket pool and NTP client when Wi-Fi is available."""
+    global pool
+    global ntp
+
+    if ntp is not None:
+        return True
+
+    if not esp.is_connected:
+        return False
+
+    try:
+        pool = adafruit_connection_manager.get_radio_socketpool(esp)
+        ntp = NTP(pool, tz_offset=0, cache_seconds=NTP_INTERVAL, server="pool.ntp.org")
+        return True
+    except Exception as e:
+        print("!! Could not initialize NTP client:", e)
+        pool = None
+        ntp = None
+        return False
 
 
 ##------------------------------------------------------------------------------
@@ -147,40 +162,66 @@ async def sync_time_via_ntp():
     global ts_clocktick
     global ts_lastntpsync
     global consecutive_failures
+    global next_ntp_attempt_monotonic
+    global ntp_sync_in_progress
+    global ntp
+    global pool
+
+    now_monotonic = time.monotonic()
+    if now_monotonic < next_ntp_attempt_monotonic:
+        return
 
     print("\n>> Syncing time via NTP...")
-    try:
-        if not esp.is_connected:
-            print("!! Wi-Fi disconnected before NTP sync, reconnecting...")
-            if not await reconnect_wifi():
-                raise OSError("Wi-Fi reconnect timeout before NTP sync")
 
+    if not esp.is_connected:
+        print("!! Wi-Fi disconnected; postponing NTP sync.")
+        next_ntp_attempt_monotonic = now_monotonic + NTP_RETRY_INTERVAL
+        return
+
+    if not init_ntp_client():
+        next_ntp_attempt_monotonic = now_monotonic + NTP_RETRY_INTERVAL
+        return
+
+    ntp_sync_in_progress = True
+    update_display()
+
+    try:
         ## Cache ntp.datetime once to avoid two blocking network calls
         ntp_now = ntp.datetime
         rtc.datetime = ntp_now
         ts_clocktick = time.mktime(ntp_now)
-        ts_lastntpsync = time.monotonic()
+        ts_lastntpsync = now_monotonic
+        next_ntp_attempt_monotonic = now_monotonic + NTP_INTERVAL
         print("<< Time synchronized successfully.")
         consecutive_failures = 0  # reset on success
-    except OSError as e:
+    except Exception as e:
         consecutive_failures += 1
-        print(f"!! OSError while syncing time: {e} (fail #{consecutive_failures})")
+        print(f"!! Error while syncing time: {e} (fail #{consecutive_failures})")
         ## Schedule next retry after NTP_RETRY_INTERVAL, not on every tick
-        ts_lastntpsync = time.monotonic() - NTP_INTERVAL + NTP_RETRY_INTERVAL
-        ## If we’ve failed too many times in a row, reset the ESP
+        next_ntp_attempt_monotonic = now_monotonic + NTP_RETRY_INTERVAL
+        ## Drop client so a fresh socket/NTP object is created on next successful Wi-Fi attempt
+        pool = None
+        ntp = None
+
+        ## Keep running offline even on repeated failures
         if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-            print("!! Too many consecutive failures, resetting the ESP module...")
-            esp.reset()                # Hard-reset the ESP32
-            ## After a reset, the ESP32 is in an initial state, so we need to re-init Wi-Fi
-            if not await reconnect_wifi(max_wait_s=30):
-                print("!! ESP reconnect failed repeatedly; performing board reset.")
-                microcontroller.reset()
+            print("!! Too many consecutive failures, resetting ESP module and continuing offline.")
+            try:
+                esp.reset()
+            except Exception as reset_error:
+                print("!! ESP reset failed:", reset_error)
             consecutive_failures = 0
+    finally:
+        ntp_sync_in_progress = False
 
 
 ##------------------------------------------------------------------------------
 async def reconnect_wifi(max_wait_s=20):
-    """Reconnect to Wi-Fi after an esp.reset()."""
+    """Try to reconnect to Wi-Fi within a bounded timeout."""
+    if not CIRCUITPY_WIFI_SSID or not CIRCUITPY_WIFI_PASSWORD:
+        print("!! Missing Wi-Fi credentials in settings.toml.")
+        return False
+
     deadline = time.monotonic() + max_wait_s
     while (not esp.is_connected) and (time.monotonic() < deadline):
         try:
@@ -191,10 +232,35 @@ async def reconnect_wifi(max_wait_s=20):
         await asyncio.sleep(WIFI_RETRY_DELAY)
 
     if esp.is_connected:
-        print("!! Reconnected to Wi-Fi after ESP reset.")
+        print("## Connected to", esp.ap_info.ssid, "\tRSSI:", esp.ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
         return True
 
     print("!! Reconnect timeout.")
+    try:
+        esp.reset()
+    except Exception as reset_error:
+        print("!! ESP reset after reconnect timeout failed:", reset_error)
+    return False
+
+
+##------------------------------------------------------------------------------
+async def maintain_wifi_connection():
+    """Reconnect periodically while keeping clock updates non-blocking."""
+    global next_wifi_attempt_monotonic
+
+    if esp.is_connected:
+        return True
+
+    now_monotonic = time.monotonic()
+    if now_monotonic < next_wifi_attempt_monotonic:
+        return False
+
+    connected = await reconnect_wifi(max_wait_s=WIFI_ATTEMPT_TIMEOUT)
+    if connected:
+        next_wifi_attempt_monotonic = now_monotonic + WIFI_RETRY_DELAY
+        return True
+
+    next_wifi_attempt_monotonic = now_monotonic + WIFI_OFFLINE_RETRY_INTERVAL
     return False
 
 
@@ -240,6 +306,14 @@ color[1] = 0x400000  # red
 color[2] = 0xCC4000  # amber
 color[3] = 0x404000  # greenish
 color[4] = 0x0846e4  # blueish
+
+status_palette = displayio.Palette(3)
+status_palette[0] = 0x000000
+status_palette[1] = color[2]  # amber: NTP overdue
+status_palette[2] = color[1]  # red: no network
+status_palette.make_transparent(0)
+status_bitmap = displayio.Bitmap(display.width, display.height, len(status_palette))
+status_tile_grid = displayio.TileGrid(status_bitmap, pixel_shader=status_palette)
 
 # ## Create a bitmap object (width, height, bit depth)
 # bitmap = displayio.Bitmap(64, 32, 5)
@@ -309,6 +383,29 @@ SHT40_MODES = (
 
 
 ##------------------------------------------------------------------------------
+def sht40_crc(data):
+    """Compute Sensirion CRC-8 for a two-byte SHT40 payload."""
+    crc = 0xFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            if crc & 0x80:
+                crc = ((crc << 1) ^ 0x31) & 0xFF
+            else:
+                crc = (crc << 1) & 0xFF
+    return crc
+
+
+##------------------------------------------------------------------------------
+def validate_sht40_crc(rx_bytes):
+    """Validate both CRC bytes returned by the SHT40 sensor."""
+    if sht40_crc(rx_bytes[0:2]) != rx_bytes[2]:
+        raise RuntimeError("SHT40 temperature CRC mismatch")
+    if sht40_crc(rx_bytes[3:5]) != rx_bytes[5]:
+        raise RuntimeError("SHT40 humidity CRC mismatch")
+
+
+##------------------------------------------------------------------------------
 def read_sensor():
     """
     Read measurement data from Sensirion SHT40.
@@ -329,6 +426,7 @@ def read_sensor():
         time.sleep(mode[-1])
         rx_bytes = bytearray(6)
         i2c_bus.readfrom_into(SHT40_SENSOR, rx_bytes)
+        validate_sht40_crc(rx_bytes)
         # print('>', rx_bytes, len(rx_bytes))
         t_ticks = rx_bytes[0] * 256 + rx_bytes[1]
         rh_ticks = rx_bytes[3] * 256 + rx_bytes[4]
@@ -387,6 +485,41 @@ display.root_group = group
 ## Add the labels to the group
 group.append(clock_label)
 group.append(sensor_label)
+group.append(status_tile_grid)
+
+
+##------------------------------------------------------------------------------
+def set_status_corner(left, color_index):
+    """Render a small square marker in the requested top corner."""
+    if left:
+        start_x = 0
+    else:
+        start_x = display.width - STATUS_MARKER_SIZE
+
+    for x in range(start_x, start_x + STATUS_MARKER_SIZE):
+        for y in range(STATUS_MARKER_SIZE):
+            status_bitmap[x, y] = color_index
+
+
+##------------------------------------------------------------------------------
+def update_status_markers(now_monotonic):
+    """Show top-corner status markers for stale NTP sync and missing network."""
+    blink_phase_on = (not BLINK) or (int(now_monotonic) % 2 == 1)
+    ntp_never_synced = ts_lastntpsync is None
+    ntp_overdue = (
+        ts_lastntpsync is not None
+        and now_monotonic > ts_lastntpsync + NTP_INTERVAL
+    )
+    no_network = not esp.is_connected
+
+    left_marker_on = False
+    if ntp_sync_in_progress or ntp_never_synced:
+        left_marker_on = blink_phase_on
+    elif ntp_overdue:
+        left_marker_on = True
+
+    set_status_corner(True, 1 if left_marker_on else 0)
+    set_status_corner(False, 2 if no_network else 0)
 
 
 ##------------------------------------------------------------------------------
@@ -469,6 +602,7 @@ def update_display(*, now: time.struct_time | tuple | None=None):
     bbx, bby, bbwidth, bbh = sensor_label.bounding_box
     sensor_label.x = round(display.width / 2 - bbwidth / 2)  # centered
     sensor_label.y = 26
+    update_status_markers(now_monotonic)
     if DEBUG:
         print("## sensor_label bounding box: {},{},{},{}".format(bbx, bby, bbwidth, bbh))
         print("## sensor_label x: {} y: {}".format(sensor_label.x, sensor_label.y))
@@ -477,7 +611,8 @@ def update_display(*, now: time.struct_time | tuple | None=None):
 ##------------------------------------------------------------------------------
 async def clocktick():
     """Check if NTP sync is due and update the clock display."""
-    if not DEBUG and (ts_lastntpsync is None or time.monotonic() > ts_lastntpsync + NTP_INTERVAL):
+    if not DEBUG:
+        await maintain_wifi_connection()
         await sync_time_via_ntp()
     update_display()
 
