@@ -13,15 +13,12 @@ import time
 import asyncio
 
 ## Network ---------------------------------------------------------------------
+import adafruit_connection_manager
 import board
 import digitalio
 import busio
+import neopixel
 from adafruit_esp32spi import adafruit_esp32spi
-
-# import neopixel
-# from adafruit_esp32spi import adafruit_esp32spi_wifimanager
-
-import adafruit_connection_manager
 
 ## NTP & RTC -------------------------------------------------------------------
 from rtc import RTC
@@ -48,10 +45,11 @@ DEBUG = False
 ## Blinking colon
 BLINK = True
 ## NTP sync interval
-NTP_INTERVAL = 3600  # 3600s = 60min = 1h
 NTP_INTERVAL = 3600 * 6  # 3600s * 6 = 60min * 6 = 6h
+NTP_INTERVAL = 3600  # 3600s = 60min = 1h
 ## NTP retry interval after failure
 NTP_RETRY_INTERVAL = 300  # 5 minutes
+NTP_RETRY_INTERVAL = 30  # 30 Sekunden
 ## Last NTP sync
 ts_lastntpsync = None
 ## Clock counter starts at 00:00:00 UTC
@@ -75,6 +73,7 @@ last_sensor_reading = (None, None)
 next_wifi_attempt_monotonic = 0.0
 next_ntp_attempt_monotonic = 0.0
 ntp_sync_in_progress = False
+last_neopixel_color = None
 
 pool = None
 ntp = None
@@ -117,6 +116,12 @@ if esp.status == adafruit_esp32spi.WL_IDLE_STATUS:
 print("## Firmware vers.", esp.firmware_version)
 print("## MAC addr:", ":".join("%02X" % byte for byte in esp.MAC_address))
 print("## IP addr:", esp.pretty_ip(esp.ip_address))
+
+try:
+    status_neopixel = neopixel.NeoPixel(board.NEOPIXEL, 1, brightness=0.08, auto_write=True)
+except Exception as e:
+    print("!! NeoPixel status LED unavailable:", e)
+    status_neopixel = None
 
 ## Scan networks (=> slow !!!)
 # for ap in esp.scan_networks():
@@ -520,6 +525,31 @@ def update_status_markers(now_monotonic):
 
     set_status_corner(True, 1 if left_marker_on else 0)
     set_status_corner(False, 2 if no_network else 0)
+    update_status_neopixel(blink_phase_on, ntp_never_synced, ntp_overdue, no_network)
+
+
+##------------------------------------------------------------------------------
+def update_status_neopixel(blink_phase_on, ntp_never_synced, ntp_overdue, no_network):
+    """Mirror network/NTP status on the built-in NeoPixel."""
+    global last_neopixel_color
+
+    if status_neopixel is None:
+        return
+
+    if ntp_sync_in_progress:
+        color_rgb = (0, 0, 32) if blink_phase_on else (0, 0, 0)      # blue blink
+    elif no_network:
+        color_rgb = (48, 0, 0)                                         # red
+    elif ntp_never_synced:
+        color_rgb = (48, 20, 0) if blink_phase_on else (0, 0, 0)       # amber blink
+    elif ntp_overdue:
+        color_rgb = (48, 20, 0)                                         # amber
+    else:
+        color_rgb = (0, 8, 0)                                           # dim green
+
+    if color_rgb != last_neopixel_color:
+        status_neopixel[0] = color_rgb
+        last_neopixel_color = color_rgb
 
 
 ##------------------------------------------------------------------------------
