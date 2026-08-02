@@ -7,15 +7,10 @@
     "reportMissingModuleSource": "none",
     // "reportMissingImports": false,
     "reportGeneralTypeIssues": false,
-    "reportAttributeAccessIssue": "none",
-    "reportArgumentType": "none",
-    "reportAssignmentType": "none",
-    "reportOptionalMemberAccess": "none",
-    "stubPath": ".venv/lib/python3.11/site-packages",
     "extraPaths": [
         "src",
         "src/lib"
     ],
     "include": ["src"],
-    "exclude": ["**/node_modules", "**/__pycache__", "**/.*", "build", "dist", "**/*.egg-info"]
+    "exclude": ["**/node_modules", "**/__pycache__", "**/.*", "build", "dist", "**/*.egg-info", "**/_archive_"]
 }

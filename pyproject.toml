@@ -1,0 +1,50 @@
+
+## --- ty (Typechecker, CLI & VSCode-Extension) --------------------------------
+## Die CircuitPython-Stubs sind reguläre PEP-561-Pakete im .venv - im Gegensatz
+## zu den MicroPython-Projekten ist hier KEIN eigenes Typeshed nötig.
+## Boardspezifische Pins: .venv/bin/circuitpython_setboard matrixportal_m4
+[tool.ty.src]
+include = ["src"]
+exclude = ["src/_archive_"]
+
+[tool.ty.environment]
+python = "./.venv"
+python-version = "3.11"
+
+## Bekannter Upstream-Konflikt: adafruit_bitmap_font benennt den get_glyph-
+## Parameter `code_point`, das FontProtocol der circuitpython-stubs `codepoint`.
+## Dadurch Fehlalarme bei Label(font=...) und `label.font = ...`.
+## Zusätzlich deklarieren die rgbmatrix-Stubs DigitalInOut statt Pin.
+[[tool.ty.overrides]]
+include = [
+    "src/code.py",
+    'src/code_Network\+Display.py',
+    'src/code_scrolling\ text.py',
+]
+
+[tool.ty.overrides.rules]
+invalid-argument-type = "ignore"
+invalid-assignment = "ignore"
+
+[tool.ruff]
+line-length = 160
+indent-width = 4
+target-version = "py310"
+exclude = [
+    "__init__.py",
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.ipynb",
+    "_archive_",
+    "Examples",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "C90"]
+ignore = ["E201", "E202", "E203", "E221", "E222", "E241", "E265", "E266"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10

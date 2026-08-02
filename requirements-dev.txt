@@ -1,0 +1,26 @@
+## Host venv for development & type checking.
+## (Device libraries are installed with circup, see requirements.txt!)
+
+## CircuitPython core stubs (board, displayio, rgbmatrix, rtc, ...)
+## After installing/updating, select the board pins:
+##     .venv/bin/circuitpython_setboard matrixportal_m4
+circuitpython-stubs
+
+## Adafruit libraries (host versions, typed - used by the checkers and Blinka)
+adafruit-blinka
+adafruit-blinka-displayio
+adafruit-circuitpython-matrixportal
+adafruit-circuitpython-esp32spi
+adafruit-circuitpython-connectionmanager
+adafruit-circuitpython-ntp
+adafruit-circuitpython-display-text
+adafruit-circuitpython-bitmap-font
+adafruit-circuitpython-imageload
+adafruit-circuitpython-neopixel
+
+## Tools
+circup
+basedpyright
+ty
+ruff
+mpremote

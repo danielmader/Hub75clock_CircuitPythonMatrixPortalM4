@@ -7,6 +7,11 @@
 # and it is possible to modify the example to use other fonts and non-standard
 # characters.
 
+## Die rgbmatrix-Stubs deklarieren die Pin-Parameter fälschlich als DigitalInOut;
+## tatsächlich (und in allen offiziellen Beispielen) werden microcontroller.Pin
+## übergeben - daher dateiweit unterdrückt (für ty per Override in pyproject.toml).
+# pyright: reportArgumentType=false
+
 import adafruit_display_text.label
 import board
 import displayio

@@ -18,38 +18,36 @@ https://adafruit-playground.com/u/VPTechOps/pages/rgb-matrix-word-clocks
 import os
 import time
 
-## Network #1 w/ ESP32 ---------------------------------------------------------
-import board
-import digitalio
-import busio
-from adafruit_esp32spi import adafruit_esp32spi
-
-import neopixel
-from adafruit_esp32spi import adafruit_esp32spi_wifimanager
-
 import adafruit_connection_manager
 
-## NTP & RTC -------------------------------------------------------------------
-from rtc import RTC
-from adafruit_ntp import NTP
+## Network #1 w/ ESP32 ---------------------------------------------------------
+import board
+import busio
+import digitalio
+
+## Display #3 ------------------------------------------------------------------
+import displayio
+import neopixel
+import terminalio
+
+## Clock Testing ---------------------------------------------------------------
+from adafruit_bitmap_font import bitmap_font
+from adafruit_display_text import label
+from adafruit_esp32spi import adafruit_esp32spi, adafruit_esp32spi_wifimanager
+
+## Display #2 ------------------------------------------------------------------
+from adafruit_matrixportal.matrix import Matrix
+
+## Display #1 ------------------------------------------------------------------
+from adafruit_matrixportal.matrixportal import MatrixPortal
 
 ## Network #2 & NTP #2 ---------------------------------------------------------
 ## ==> needs AIO credentials for network.get_local_time() :(
 from adafruit_matrixportal.network import Network
+from adafruit_ntp import NTP
 
-## Display #1 ------------------------------------------------------------------
-from adafruit_matrixportal.matrixportal import MatrixPortal
-import terminalio
-
-## Display #2 ------------------------------------------------------------------
-from adafruit_matrixportal.matrix import Matrix
-from adafruit_display_text import label
-
-## Display #3 ------------------------------------------------------------------
-import displayio
-
-## Clock Testing ---------------------------------------------------------------
-from adafruit_bitmap_font import bitmap_font
+## NTP & RTC -------------------------------------------------------------------
+from rtc import RTC
 
 ##******************************************************************************
 ##******************************************************************************
@@ -99,7 +97,9 @@ while not esp.is_connected:
     except OSError as e:
         print("!! Could not connect, retrying: ", e)
         continue
-print("## Connected to", esp.ap_info.ssid, "\tRSSI:", esp.ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
+ap_info = esp.ap_info  # Optional laut Stubs, daher lokale Variable mit Guard
+if ap_info is not None:
+    print("## Connected to", ap_info.ssid, "\tRSSI:", ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
 
 
 ##==============================================================================

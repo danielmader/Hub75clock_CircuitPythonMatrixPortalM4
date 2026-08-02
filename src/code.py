@@ -8,29 +8,29 @@ MatrixClock - a HUB75 LED matrix clock driven by Adafruit's MaxtrixPortal M4.
 @version: 2026-05-06
 """
 
+import asyncio
 import os
 import time
-import asyncio
 
 ## Network ---------------------------------------------------------------------
 import adafruit_connection_manager
+import adafruit_imageload
 import board
-import digitalio
 import busio
+import digitalio
+import displayio
 import neopixel
+import terminalio
+from adafruit_bitmap_font import bitmap_font
+from adafruit_display_text.label import Label
 from adafruit_esp32spi import adafruit_esp32spi
-
-## NTP & RTC -------------------------------------------------------------------
-from rtc import RTC
-from adafruit_ntp import NTP
 
 ## Display ---------------------------------------------------------------------
 from adafruit_matrixportal.matrix import Matrix
-from adafruit_display_text.label import Label
-from adafruit_bitmap_font import bitmap_font
-import adafruit_imageload
-import displayio
-import terminalio
+from adafruit_ntp import NTP
+
+## NTP & RTC -------------------------------------------------------------------
+from rtc import RTC
 
 ## Clock -----------------------------------------------------------------------
 import datetime_util
@@ -183,7 +183,7 @@ async def sync_time_via_ntp():
         next_ntp_attempt_monotonic = now_monotonic + NTP_RETRY_INTERVAL
         return
 
-    if not init_ntp_client():
+    if not init_ntp_client() or ntp is None:
         next_ntp_attempt_monotonic = now_monotonic + NTP_RETRY_INTERVAL
         return
 
@@ -237,7 +237,9 @@ async def reconnect_wifi(max_wait_s=20):
         await asyncio.sleep(WIFI_RETRY_DELAY)
 
     if esp.is_connected:
-        print("## Connected to", esp.ap_info.ssid, "\tRSSI:", esp.ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
+        ap_info = esp.ap_info  # Optional laut Stubs, daher lokale Variable mit Guard
+        if ap_info is not None:
+            print("## Connected to", ap_info.ssid, "\tRSSI:", ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
         return True
 
     print("!! Reconnect timeout.")
@@ -283,6 +285,7 @@ display = matrix.display
 
 ## Load Python logo from a BMP file
 image, palette = adafruit_imageload.load("Python-logo_64x32.bmp")
+assert palette is not None  # BMP ist palettenbasiert, load() liefert hier immer eine Palette
 tile_grid = displayio.TileGrid(image, pixel_shader=palette)
 group = displayio.Group()
 group.append(tile_grid)
@@ -303,17 +306,18 @@ time.sleep(2)  # show the Python logo for 2 seconds
 # display.root_group = text_area
 # time.sleep(1)  # show the text for 1 second
 
-## Create a color palette
-color = displayio.Palette(5)
-color[0] = 0x000000  # black background
-color[1] = 0x400000  # red
-# color[1] = 0xAA0000  # red (night mode – dim but visible)
-color[2] = 0xCC4000  # amber
-color[3] = 0x404000  # greenish
-color[4] = 0x0846e4  # blueish
+## Color values (plain ints; Palette[i] would return `int | None` for the checkers)
+color = (
+    0x000000,  # 0: black background
+    0x400000,  # 1: red
+    # 0xAA0000,  # 1: red (night mode – dim but visible)
+    0xCC4000,  # 2: amber
+    0x404000,  # 3: greenish
+    0x0846e4,  # 4: blueish
+)
 
 status_palette = displayio.Palette(3)
-status_palette[0] = 0x000000
+status_palette[0] = color[0]
 status_palette[1] = color[2]  # amber: NTP overdue
 status_palette[2] = color[1]  # red: no network
 status_palette.make_transparent(0)
@@ -606,7 +610,8 @@ def update_display(*, now: time.struct_time | tuple | None=None):
     time_str_display = "{:d}{}{:02d}".format(hours, colon, minutes)
     # time_str_stdout = "{}:{:02d}".format(time_str_display, seconds)
     clock_label.text = time_str_display
-    bbx, bby, bbwidth, bbh = clock_label.bounding_box
+    ## bounding_box liefert 4 Werte; die Annotation in adafruit_display_text ist falsch (Tuple[int, int])
+    bbx, bby, bbwidth, bbh = clock_label.bounding_box  # pyright: ignore
 
     clock_label.x = round(display.width / 2 - bbwidth / 2)  # centered
     clock_label.y = display.height // 3
@@ -629,7 +634,8 @@ def update_display(*, now: time.struct_time | tuple | None=None):
         sensor_str = "{:.1f}°  {:.1f}%".format(t_degC, rh_pRH)
 
     sensor_label.text = sensor_str
-    bbx, bby, bbwidth, bbh = sensor_label.bounding_box
+    ## bounding_box liefert 4 Werte; die Annotation in adafruit_display_text ist falsch (Tuple[int, int])
+    bbx, bby, bbwidth, bbh = sensor_label.bounding_box  # pyright: ignore
     sensor_label.x = round(display.width / 2 - bbwidth / 2)  # centered
     sensor_label.y = 26
     update_status_markers(now_monotonic)

@@ -1,5 +1,5 @@
 ## VSCode
-*.code-workspace
+# *.code-workspace
 
 *.directory
 # *Verknüpfung.lnk

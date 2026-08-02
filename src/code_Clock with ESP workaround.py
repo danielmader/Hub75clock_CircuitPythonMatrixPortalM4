@@ -1,18 +1,18 @@
+import asyncio
 import os
 import time
-import asyncio
+
+import adafruit_connection_manager
+import adafruit_ntp
 
 ## Network ---------------------------------------------------------------------
 import board
-import digitalio
 import busio
-from adafruit_esp32spi import adafruit_esp32spi
-
-import adafruit_connection_manager
+import digitalio
 
 ## NTP & RTC -------------------------------------------------------------------
 import rtc
-import adafruit_ntp
+from adafruit_esp32spi import adafruit_esp32spi
 
 ## Clock -----------------------------------------------------------------------
 import datetime_util
@@ -91,7 +91,9 @@ while not esp.is_connected:
     except OSError as e:
         print("!! Could not connect, retrying: ", e)
         continue
-print("## Connected to", esp.ap_info.ssid, "\tRSSI:", esp.ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
+ap_info = esp.ap_info  # Optional laut Stubs, daher lokale Variable mit Guard
+if ap_info is not None:
+    print("## Connected to", ap_info.ssid, "\tRSSI:", ap_info.rssi, "\tIP addr:", esp.pretty_ip(esp.ip_address))
 
 
 ##==============================================================================
@@ -102,9 +104,9 @@ print(  "*******************")
 pool = adafruit_connection_manager.get_radio_socketpool(esp)
 ntp = adafruit_ntp.NTP(pool, tz_offset=0, cache_seconds=NTP_INTERVAL, server="pool.ntp.org")
 print("## Current NTP time:", ntp.datetime)
-rtc = rtc.RTC()
-rtc.datetime = ntp.datetime
-print("## Current RTC time:", rtc.datetime)
+rtc_inst = rtc.RTC()  ## eigener Name, um das rtc-Modul nicht zu verschatten
+rtc_inst.datetime = ntp.datetime
+print("## Current RTC time:", rtc_inst.datetime)
 
 
 ##------------------------------------------------------------------------------
@@ -117,7 +119,7 @@ def sync_time_via_ntp():
     print("\n>> Syncing time via NTP...")
     try:
         ## The line below may raise an OSError if SPI times out or if Wi-Fi is locked up
-        rtc.datetime = ntp.datetime
+        rtc_inst.datetime = ntp.datetime
         ts_clocktick = time.mktime(ntp.datetime)
         ts_lastntpsync = time.monotonic()
         print("<< Time synchronized successfully.")
@@ -156,7 +158,7 @@ def update_display(show_colon=False):
     # now_monotonic = time.monotonic()
     now_time = time.time()
     now_tick = ts_clocktick
-    now_rtc = rtc.datetime
+    now_rtc = rtc_inst.datetime
     ## Protect the direct ntp.datetime call
     try:
         now_ntp = ntp.datetime
